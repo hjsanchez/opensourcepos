@@ -1,38 +1,38 @@
-FROM php:8.2-apache AS ospos
-LABEL maintainer="jekkos"
+# Imagen final que se ejecutará en Azure
+FROM php:8.2-apache
 
-RUN apt update && apt-get install -y libicu-dev libgd-dev
-RUN a2enmod rewrite
-RUN docker-php-ext-install mysqli bcmath intl gd
-RUN echo "date.timezone = \"\${PHP_TIMEZONE}\"" > /usr/local/etc/php/conf.d/timezone.ini
+# 1) Paquetes y extensiones PHP que usa OSPOS
+RUN apt-get update \
+ && apt-get install -y libicu-dev libgd-dev libzip-dev git unzip \
+ && docker-php-ext-install mysqli bcmath intl gd zip pdo_mysql \
+ && a2enmod rewrite
 
+# 2) Instalar Composer (para generar /vendor en la imagen)
+RUN php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');" \
+ && php composer-setup.php --install-dir=/usr/local/bin --filename=composer \
+ && rm composer-setup.php
+
+# 3) Variables PHP (timezone)
+ENV PHP_TIMEZONE=UTC
+RUN echo "date.timezone = \"${PHP_TIMEZONE}\"" > /usr/local/etc/php/conf.d/timezone.ini
+
+# 4) Copiar código y generar vendor
 WORKDIR /app
-COPY . /app
-RUN ln -s /app/*[^public] /var/www && rm -rf /var/www/html && ln -nsf /app/public /var/www/html
-RUN chmod -R 770 /app/writable/uploads /app/writable/logs /app/writable/cache && chown -R www-data:www-data /app
+COPY composer.json composer.lock ./
+RUN composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction --no-progress
+COPY . .
 
-FROM ospos AS ospos_test
+# 5) Apuntar Apache a /public y permitir .htaccess
+RUN rm -rf /var/www/html \
+ && ln -s /app /var/www/html \
+ && sed -ri 's#DocumentRoot /var/www/html#DocumentRoot /var/www/html/public#' /etc/apache2/sites-available/000-default.conf \
+ && sed -ri 's#<Directory /var/www/>#<Directory /var/www/html/public/>#' /etc/apache2/apache2.conf \
+ && sed -ri 's#AllowOverride None#AllowOverride All#' /etc/apache2/apache2.conf
 
-COPY --from=composer /usr/bin/composer /usr/bin/composer
+# 6) Permisos de carpetas que escribe la app
+RUN chmod -R 770 /app/writable/uploads /app/writable/logs /app/writable/cache \
+ && chown -R www-data:www-data /app
 
-RUN apt-get install -y libzip-dev wget git
-RUN wget https://raw.githubusercontent.com/vishnubob/wait-for-it/master/wait-for-it.sh -O /bin/wait-for-it.sh && chmod +x /bin/wait-for-it.sh
-RUN docker-php-ext-install zip
-RUN composer install -d/app
-#RUN sed -i 's/backupGlobals="true"/backupGlobals="false"/g' /app/tests/phpunit.xml
-WORKDIR /app/tests
-
-CMD ["/app/vendor/phpunit/phpunit/phpunit", "/app/test/helpers"]
-
-FROM ospos AS ospos_dev
-
-ARG USERID
-ARG GROUPID
-
-RUN echo "Adding user uid $USERID with gid $GROUPID"
-RUN ( addgroup --gid $GROUPID ospos || true ) && ( adduser --uid $USERID --gid $GROUPID ospos )
-
-RUN yes | pecl install xdebug \
-    && echo "zend_extension=$(find /usr/local/lib/php/extensions/ -name xdebug.so)" > /usr/local/etc/php/conf.d/xdebug.ini \
-    && echo "xdebug.mode=debug" >> /usr/local/etc/php/conf.d/xdebug.ini \
-    && echo "xdebug.remote_autostart=off" >> /usr/local/etc/php/conf.d/xdebug.ini
+# 7) Puerto y comando de arranque
+EXPOSE 80
+CMD ["apache2-foreground"]
