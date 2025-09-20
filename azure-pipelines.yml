@@ -2,9 +2,16 @@
 # Build and push an image to Azure Container Registry
 # https://docs.microsoft.com/azure/devops/pipelines/languages/docker
 
+# Solo dispara en TAGS (no en ramas)
 trigger:
+  branches:
+    exclude:
+      - '*'
   tags:
-    include : [3.4.1]
+    include:
+      - '*'           # o '3.*' si quieres solo mayor 3.x
+# PRs no aplican a tags
+pr: none
 
 resources:
 - repo: self
